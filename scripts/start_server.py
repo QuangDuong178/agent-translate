@@ -40,6 +40,14 @@ TRAINED_MODELS = [
         "dir": "nllb-zh-vi-direct/final",
         "type": "nllb",
     },
+    # ── M2M-100 Direct models ──
+    {
+        "id": "m2m100-en-vi-direct",
+        "alias": "M2M-100 EN→VI Direct (30K)",
+        "hf_name": "fine-tuned/m2m100-en-vi",
+        "dir": "m2m100-en-vi-finetuned/final",
+        "type": "m2m100",
+    },
     # ── OpusMT EN→X fine-tuned models ──
     {
         "id": "ft-opus-en-vi-v2",

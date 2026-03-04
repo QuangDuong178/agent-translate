@@ -1025,6 +1025,7 @@ def _subtitle_extract_task(job_id: str, req: SubtitleExtractRequest):
             'outtmpl': str(job_dir / 'audio_raw.%(ext)s'),
             'quiet': True,
             'no_warnings': True,
+            'nocheckcertificate': True,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -1053,7 +1054,8 @@ def _subtitle_extract_task(job_id: str, req: SubtitleExtractRequest):
 
         _pipeline_set(job, "download", "completed", title=job["video_title"], duration=job["duration"])
         job["progress"] = 25
-        logger.info(f"[Subtitle {job_id}] Download complete: {job['video_title']}")
+        duration_str = f"{job['duration']//60}:{job['duration']%60:02d}" if job.get('duration') else 'N/A'
+        logger.info(f"[Subtitle {job_id}] ✅ Download complete: \"{job['video_title']}\" ({duration_str})")
 
         # Continue with transcription pipeline
         _subtitle_process_video(job_id, audio_path, req)
@@ -1074,7 +1076,9 @@ def _subtitle_process_video(job_id: str, audio_path: str, req: SubtitleExtractRe
         # ── Node: transcribe ──
         _pipeline_set(job, "transcribe", "running")
         job["progress"] = 30
-        logger.info(f"[Subtitle {job_id}] Transcribing with Whisper: {req.whisper_model}")
+        logger.info(f"══════════════════════════════════════════════")
+        logger.info(f"[Subtitle {job_id}] 🎤 Transcribing with Whisper model: {req.whisper_model}")
+        logger.info(f"══════════════════════════════════════════════")
 
         from faster_whisper import WhisperModel
 
@@ -1099,12 +1103,25 @@ def _subtitle_process_video(job_id: str, audio_path: str, req: SubtitleExtractRe
         job["progress"] = 45
 
         segments = []
+        job["live_transcriptions"] = []  # Realtime transcription display
         for seg in segments_iter:
             segments.append({
                 "start": seg.start,
                 "end": seg.end,
                 "text": seg.text.strip(),
             })
+            # Send to frontend in realtime
+            job["live_transcriptions"].append({
+                "idx": len(segments) - 1,
+                "start": seg.start,
+                "end": seg.end,
+                "text": seg.text.strip(),
+            })
+            job["segment_count"] = len(segments)
+            # Log each segment as it's transcribed
+            start_t = f"{int(seg.start)//60}:{int(seg.start)%60:02d}"
+            end_t = f"{int(seg.end)//60}:{int(seg.end)%60:02d}"
+            logger.info(f"[Subtitle {job_id}] 🎤 [{len(segments):3d}] [{start_t}-{end_t}] {seg.text.strip()[:80]}")
 
         if not segments:
             raise Exception("No speech detected in the audio")
@@ -1123,7 +1140,9 @@ def _subtitle_process_video(job_id: str, audio_path: str, req: SubtitleExtractRe
                        probability=round(info.language_probability, 2),
                        segment_count=len(segments))
         job["progress"] = 50
-        logger.info(f"[Subtitle {job_id}] Transcribed {len(segments)} segments, lang={detected_lang}")
+        logger.info(f"══════════════════════════════════════════════")
+        logger.info(f"[Subtitle {job_id}] ✅ Transcribed {len(segments)} segments | Language: {detected_lang} ({info.language_probability:.0%})")
+        logger.info(f"══════════════════════════════════════════════")
 
         # Clean up whisper
         del whisper
@@ -1133,21 +1152,13 @@ def _subtitle_process_video(job_id: str, audio_path: str, req: SubtitleExtractRe
         target_lang = req.target_lang
 
         if detected_lang == target_lang:
-            _pipeline_set(job, "summarize", "skipped", reason="source == target")
             _pipeline_set(job, "detect", "skipped", reason="source == target")
             _pipeline_set(job, "translate", "skipped", reason="source == target")
-            _pipeline_set(job, "refine", "skipped", reason="no translation needed")
             _pipeline_set(job, "output", "completed")
             job["status"] = "completed"
             job["progress"] = 100
             logger.info(f"[Subtitle {job_id}] Source=target ({detected_lang}), done")
         else:
-            # ── Node: summarize ──
-            if req.enable_refine:
-                _summarize_transcript(job_id, target_lang)
-            else:
-                _pipeline_set(job, "summarize", "skipped", reason="refine disabled")
-
             # ── Node: detect + translate ──
             model_id = req.model_id
             if not model_id or model_id not in models_registry:
@@ -1157,11 +1168,10 @@ def _subtitle_process_video(job_id: str, audio_path: str, req: SubtitleExtractRe
 
             _translate_srt_segments(job_id, target_lang, fallback_model_id=model_id)
 
-            # ── Node: refine ──
+            # ── Node: refine (disabled by default) ──
             if req.enable_refine and job["status"] != "failed":
+                _summarize_transcript(job_id, target_lang)
                 _refine_with_context(job_id, target_lang)
-            elif not req.enable_refine:
-                _pipeline_set(job, "refine", "skipped", reason="disabled by user")
 
             # ── Node: output ──
             if job["status"] != "failed":
@@ -1310,7 +1320,9 @@ def _translate_srt_segments(job_id: str, target_lang: str, fallback_model_id: st
         # ═══ STEP 1: Language Detection ═══
         _pipeline_set(job, "detect", "running")
         whisper_lang = job.get("detected_lang") or job.get("source_lang", "en")
-        logger.info(f"[Subtitle {job_id}] Using Whisper-detected language for all {total} segments: {whisper_lang}")
+        logger.info(f"══════════════════════════════════════════════")
+        logger.info(f"[Subtitle {job_id}] 🔍 Detecting language for {total} segments...")
+        logger.info(f"[Subtitle {job_id}] 🔍 Whisper detected: {whisper_lang}")
 
         # Use Whisper's whole-file detection for all segments (faster & more accurate than per-segment)
         segment_langs = [whisper_lang] * total
@@ -1349,7 +1361,9 @@ def _translate_srt_segments(job_id: str, target_lang: str, fallback_model_id: st
             else:
                 nllb_indices.append(i)
 
-        logger.info(f"[Subtitle {job_id}] Plan: {len(local_indices)} local EN, {len(nllb_indices)} NLLB, {len(skip_indices)} skip")
+        logger.info(f"══════════════════════════════════════════════")
+        logger.info(f"[Subtitle {job_id}] 🔄 Starting translation: {len(local_indices)} local EN + {len(nllb_indices)} NLLB + {len(skip_indices)} skip")
+        logger.info(f"══════════════════════════════════════════════")
 
         # ═══ STEP 3a: Local OpusMT for EN segments ═══
         all_translated = [""] * total
@@ -1378,9 +1392,28 @@ def _translate_srt_segments(job_id: str, target_lang: str, fallback_model_id: st
             alias = model_entry.get('alias', local_en_model_id)
             logger.info(f"[Subtitle {job_id}] Loading local model for EN→{target_lang}: {alias}")
 
+            # Detect if model is NLLB or M2M-100 (both need forced_bos_token_id)
+            is_nllb = 'nllb' in model_path.lower() or 'nllb' in alias.lower()
+            is_m2m = 'm2m' in model_path.lower() or 'm2m' in alias.lower()
+            needs_forced_bos = is_nllb or is_m2m
+            logger.info(f"[Subtitle {job_id}] Model type: is_nllb={is_nllb}, is_m2m={is_m2m}, path={model_path}")
             tok = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
             mdl = AutoModelForSeq2SeqLM.from_pretrained(model_path, trust_remote_code=True)
             mdl.eval()
+
+            # NLLB/M2M requires forced_bos_token_id to generate the target language
+            nllb_generate_kwargs = {}
+            if needs_forced_bos:
+                if is_nllb:
+                    tok.src_lang = "eng_Latn"
+                    target_code = NLLB_LANG_CODES.get(target_lang, "vie_Latn")
+                    forced_bos_id = tok.convert_tokens_to_ids(target_code)
+                else:  # M2M-100
+                    tok.src_lang = "en"
+                    target_code = target_lang
+                    forced_bos_id = tok.lang_code_to_id.get(target_lang, tok.convert_tokens_to_ids(f"__{target_lang}__"))
+                nllb_generate_kwargs = {"forced_bos_token_id": forced_bos_id}
+                logger.info(f"[Subtitle {job_id}] {'NLLB' if is_nllb else 'M2M-100'} mode: target={target_code}, forced_bos_id={forced_bos_id}")
 
             # Batch translate EN segments
             EN_BATCH_SIZE = 8
@@ -1392,7 +1425,7 @@ def _translate_srt_segments(job_id: str, target_lang: str, fallback_model_id: st
                 try:
                     inputs = tok(batch_texts, return_tensors="pt", max_length=256, truncation=True, padding=True)
                     with torch.no_grad():
-                        generated = mdl.generate(**inputs, max_length=256, num_beams=2, length_penalty=1.0)
+                        generated = mdl.generate(**inputs, max_length=256, num_beams=2, length_penalty=1.0, **nllb_generate_kwargs)
                     translations = tok.batch_decode(generated, skip_special_tokens=True)
 
                     for j, idx in enumerate(batch_idx):
@@ -1400,6 +1433,7 @@ def _translate_srt_segments(job_id: str, target_lang: str, fallback_model_id: st
                         all_translated[idx] = translated
                         job["live_translations"][idx]["translated"] = translated
                         job["live_translations"][idx]["status"] = "done"
+                        logger.info(f"[Subtitle {job_id}] [{idx+1}/{total}] 🇬🇧→🇻🇳 \"{segments[idx]['text'][:60]}\" → \"{translated[:60]}\"")
                 except Exception as e:
                     logger.warning(f"[Subtitle {job_id}] EN batch {batch_start} failed: {e}, falling back")
                     for idx in batch_idx:
@@ -1510,6 +1544,7 @@ def _translate_srt_segments(job_id: str, target_lang: str, fallback_model_id: st
                                 all_translated[idx] = translated
                                 job["live_translations"][idx]["translated"] = translated
                                 job["live_translations"][idx]["status"] = "done"
+                                logger.info(f"[Subtitle {job_id}] [{idx+1}/{total}] 🔄 \"{segments[idx]['text'][:60]}\" → \"{translated[:60]}\"")
                         except Exception as e:
                             logger.warning(f"[Subtitle {job_id}] Direct NLLB {lang}→VI batch failed: {e}")
                             for idx in batch_idx:
@@ -1595,6 +1630,7 @@ def _translate_srt_segments(job_id: str, target_lang: str, fallback_model_id: st
                                 job["live_translations"][idx]["translated"] = translated
                                 job["live_translations"][idx]["status"] = "done"
                                 job["live_translations"][idx]["pivot_en"] = en_translations[idx]
+                                logger.info(f"[Subtitle {job_id}] [{idx+1}/{total}] 🔄 \"{segments[idx]['text'][:50]}\" → 🇬🇧 \"{en_translations[idx][:40]}\" → 🇻🇳 \"{translated[:50]}\"")
                         except Exception as e:
                             logger.warning(f"[Subtitle {job_id}] EN→VI batch failed: {e}")
                             for idx in batch_idx:
@@ -1667,6 +1703,7 @@ def _translate_srt_segments(job_id: str, target_lang: str, fallback_model_id: st
                                 all_translated[idx] = translated
                                 job["live_translations"][idx]["translated"] = translated
                                 job["live_translations"][idx]["status"] = "done"
+                                logger.info(f"[Subtitle {job_id}] [{idx+1}/{total}] 🌐 \"{segments[idx]['text'][:60]}\" → \"{translated[:60]}\"")
                         except Exception as e:
                             for idx in batch_idx:
                                 all_translated[idx] = segments[idx]["text"]

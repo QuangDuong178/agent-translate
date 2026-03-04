@@ -38,10 +38,8 @@ const PIPELINE_NODES = [
     { id: 'input', label: '📥 Input', icon: Youtube },
     { id: 'download', label: '⬇️ Download', icon: Download },
     { id: 'transcribe', label: '🎤 Transcribe', icon: FileText },
-    { id: 'summarize', label: '📋 Summarize', icon: FileText },
     { id: 'detect', label: '🔍 Detect', icon: Globe },
     { id: 'translate', label: '🔄 Translate', icon: Languages },
-    { id: 'refine', label: '✨ Refine', icon: Sparkles },
     { id: 'output', label: '📄 Output', icon: CheckCircle2 },
 ];
 
@@ -60,7 +58,7 @@ export default function SubtitlesPage() {
     const [targetLang, setTargetLang] = useState('vi');
     const [whisperModel, setWhisperModel] = useState('base');
     const [modelId, setModelId] = useState('');
-    const [enableRefine, setEnableRefine] = useState(true);
+    const [enableRefine, setEnableRefine] = useState(false);
     const [models, setModels] = useState([]);
     const [jobs, setJobs] = useState([]);
     const [activeJob, setActiveJob] = useState(null);
@@ -297,7 +295,7 @@ export default function SubtitlesPage() {
                         Video Subtitles Pipeline
                     </h1>
                     <p className="page-subtitle" style={{ margin: 0 }}>
-                        Automated subtitle extraction, translation & refinement pipeline
+                        Automated subtitle extraction & translation pipeline
                     </p>
                 </div>
                 <button
@@ -459,26 +457,7 @@ export default function SubtitlesPage() {
                             ))}
                         </select>
                     </div>
-                    <div>
-                        <label className="label" style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4, fontSize: 12 }}>
-                            <Sparkles size={12} /> LLM Refine
-                        </label>
-                        <button
-                            onClick={() => setEnableRefine(!enableRefine)}
-                            style={{
-                                width: '100%', padding: '9px 12px', borderRadius: 8, fontSize: 13,
-                                fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s',
-                                border: `2px solid ${enableRefine ? '#22c55e' : '#334155'}`,
-                                background: enableRefine ? '#22c55e22' : 'var(--bg-tertiary)',
-                                color: enableRefine ? '#22c55e' : 'var(--text-muted)',
-                            }}
-                        >
-                            {enableRefine ? '✨ ON' : '○ OFF'}
-                            {enableRefine && !hasGeminiKey && (
-                                <span style={{ fontSize: 10, color: '#f59e0b', marginLeft: 4 }}>⚠️ No key</span>
-                            )}
-                        </button>
-                    </div>
+
                 </div>
 
                 {tab === 'youtube' && (
@@ -500,7 +479,7 @@ export default function SubtitlesPage() {
                             {activeJob.video_title || 'Processing...'}
                         </h3>
                         <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                            {activeJob.duration ? formatDuration(activeJob.duration) : ''} • {activeJob.segments?.length || 0} segments
+                            {activeJob.duration ? formatDuration(activeJob.duration) : ''} • {activeJob.segment_count || activeJob.segments?.length || 0} segments
                         </div>
                     </div>
 
@@ -627,12 +606,7 @@ export default function SubtitlesPage() {
                                                 </div>
                                             )}
 
-                                            {/* Refine output */}
-                                            {node.id === 'refine' && step.status === 'completed' && (
-                                                <div style={{ color: 'var(--text-muted)' }}>
-                                                    ✨ Refined: <strong>{meta.refined_count || 0}</strong> segments improved via back-translation cross-check
-                                                </div>
-                                            )}
+
 
                                             {/* Error */}
                                             {step.status === 'failed' && meta.error && (
@@ -676,24 +650,98 @@ export default function SubtitlesPage() {
                         </div>
                     )}
 
+                    {/* ═══ Live Transcription Preview ═══ */}
+                    {activeJob.live_transcriptions && activeJob.live_transcriptions.length > 0 && (
+                        <div style={{ marginBottom: 14 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                <h4 style={{ margin: 0, fontSize: 13, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <FileText size={14} style={{ color: '#f59e0b' }} />
+                                    Live Transcription
+                                    {!activeJob.live_translations || activeJob.live_translations.length === 0 ? (
+                                        <span style={{
+                                            fontSize: 10, padding: '2px 8px', borderRadius: 10,
+                                            background: '#f59e0b22', color: '#f59e0b', fontWeight: 600,
+                                            animation: 'pulse 2s infinite',
+                                        }}>🎤 LIVE</span>
+                                    ) : (
+                                        <span style={{
+                                            fontSize: 10, padding: '2px 8px', borderRadius: 10,
+                                            background: '#22c55e22', color: '#22c55e', fontWeight: 600,
+                                        }}>✓ DONE</span>
+                                    )}
+                                </h4>
+                                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                    {activeJob.live_transcriptions.length} segments detected
+                                </span>
+                            </div>
+                            <div style={{
+                                maxHeight: 300, overflowY: 'auto', borderRadius: 8,
+                                background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)',
+                                scrollBehavior: 'smooth',
+                            }}>
+                                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                    <thead>
+                                        <tr style={{ borderBottom: '1px solid var(--border-subtle)', position: 'sticky', top: 0, background: 'var(--bg-secondary)', zIndex: 1 }}>
+                                            <th style={{ padding: '6px 10px', textAlign: 'left', fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, width: 30 }}>#</th>
+                                            <th style={{ padding: '6px 10px', textAlign: 'left', fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, width: 80 }}>Time</th>
+                                            <th style={{ padding: '6px 10px', textAlign: 'left', fontSize: 10, color: 'var(--text-muted)', fontWeight: 600 }}>Transcribed Text</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {activeJob.live_transcriptions.map((seg, i) => (
+                                            <tr key={i} style={{
+                                                borderBottom: '1px solid var(--border-subtle)',
+                                                background: i === activeJob.live_transcriptions.length - 1 ? '#f59e0b08' : 'transparent',
+                                                transition: 'background 0.3s',
+                                            }}>
+                                                <td style={{ padding: '4px 10px', fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                                                    {i + 1}
+                                                </td>
+                                                <td style={{ padding: '4px 10px', fontSize: 10, color: '#f59e0b', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>
+                                                    {formatDuration(seg.start)}
+                                                </td>
+                                                <td style={{ padding: '4px 10px', fontSize: 11, color: 'var(--text-primary)' }}>
+                                                    {seg.text}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+
                     {/* ═══ Live Translation Preview ═══ */}
-                    {activeJob.live_translations && activeJob.live_translations.length > 0 && activeJob.status !== 'completed' && activeJob.status !== 'failed' && (
+                    {activeJob.live_translations && activeJob.live_translations.length > 0 && (
                         <div style={{ marginBottom: 14 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                                 <h4 style={{ margin: 0, fontSize: 13, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
                                     <Languages size={14} style={{ color: 'var(--accent-primary)' }} />
                                     Live Translation
-                                    <span style={{
-                                        fontSize: 10, padding: '2px 8px', borderRadius: 10,
-                                        background: '#6366f122', color: '#818cf8', fontWeight: 600,
-                                    }}>LIVE</span>
+                                    {activeJob.status !== 'completed' && activeJob.status !== 'failed' ? (
+                                        <span style={{
+                                            fontSize: 10, padding: '2px 8px', borderRadius: 10,
+                                            background: '#6366f122', color: '#818cf8', fontWeight: 600,
+                                            animation: 'pulse 2s infinite',
+                                        }}>LIVE</span>
+                                    ) : activeJob.status === 'completed' ? (
+                                        <span style={{
+                                            fontSize: 10, padding: '2px 8px', borderRadius: 10,
+                                            background: '#22c55e22', color: '#22c55e', fontWeight: 600,
+                                        }}>✓ DONE</span>
+                                    ) : (
+                                        <span style={{
+                                            fontSize: 10, padding: '2px 8px', borderRadius: 10,
+                                            background: '#ef444422', color: '#ef4444', fontWeight: 600,
+                                        }}>FAILED</span>
+                                    )}
                                 </h4>
                                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                                     {activeJob.live_translations.filter(s => s.status === 'done').length} / {activeJob.live_translations.length} segments
                                 </span>
                             </div>
                             <div ref={liveScrollRef} style={{
-                                maxHeight: 320, overflowY: 'auto', borderRadius: 8,
+                                maxHeight: 500, overflowY: 'auto', borderRadius: 8,
                                 background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)',
                                 scrollBehavior: 'smooth',
                             }}>
@@ -832,7 +880,7 @@ export default function SubtitlesPage() {
                                                 <th style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: 'var(--text-muted)', fontWeight: 600 }}>Original</th>
                                                 <th style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: 'var(--text-muted)', fontWeight: 600 }}>
                                                     {LANG_MAP[activeJob.target_lang]?.flag} Translated
-                                                    {activeJob.refined_srt && <span style={{ color: '#a855f7', marginLeft: 4, fontSize: 10 }}>✨ refined</span>}
+
                                                 </th>
                                             </tr>
                                         </thead>
